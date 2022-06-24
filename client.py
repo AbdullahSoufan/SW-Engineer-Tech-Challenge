@@ -2,6 +2,7 @@ import asyncio
 import time
 from pydicom import Dataset
 from scp import ModalityStoreSCP
+import requests
 
 
 class SeriesCollector:
@@ -9,6 +10,7 @@ class SeriesCollector:
     It stores the (during collection incomplete) series, the Series (Instance) UID, the time the series was last updated
     with a new instance and the information whether the dispatch of the series was started.
     """
+
     def __init__(self, first_dataset: Dataset) -> None:
         """Initialization of the Series Collector with the first dataset (instance).
 
@@ -58,20 +60,30 @@ class SeriesDispatcher:
         Keeps the event loop alive whether or not datasets are received from the modality and prints a message
         regulary when no datasets are received.
         """
+
         while True:
             # TODO: Regulary check if new datasets are received and act if they are.
             # Information about Python asyncio: https://docs.python.org/3/library/asyncio.html
             # When datasets are received you should collect and process them
             # (e.g. using `asyncio.create_task(self.run_series_collector()`)
-            
+            try:
+                if self.modality_scp.dataset:
+                    self.series_collector = SeriesCollector(self.modality_scp.dataset[0])
+                    self.modality_scp.dataset.pop(0)
+                    await self.run_series_collectors()
+                    await self.dispatch_series_collector()
+            except Exception as error:
+                return None
+
             print("Waiting for Modality")
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(1)
 
     async def run_series_collectors(self) -> None:
         """Runs the collection of datasets, which results in the Series Collector being filled.
         """
         # TODO: Get the data from the SCP and start dispatching
-        pass
+        for instance in self.modality_scp.dataset:
+            self.series_collector.add_instance(instance)
 
     async def dispatch_series_collector(self) -> None:
         """Tries to dispatch a Series Collector, i.e. to finish it's dataset collection and scheduling of further
@@ -81,8 +93,22 @@ class SeriesDispatcher:
         # server if it is complete
         # NOTE: This is the last given function, you should create more for extracting the information and
         # sending the data to the server
-        maximum_wait_time = 1
-        pass
+        try:
+            series = self.extract_info_from_series()
+            self.modality_scp.dataset = []
+            requests.post('http://localhost:8000/series/', data=series, timeout=5)
+        except Exception as error:
+            return None
+
+    def extract_info_from_series(self):
+
+        series = {"SeriesInstanceUID": self.series_collector.series[0].SeriesInstanceUID,
+                  "PatientID": self.series_collector.series[0].PatientID,
+                  "PatientName": str(self.series_collector.series[0].PatientName),
+                  "StudyInstanceUID": self.series_collector.series[0].StudyInstanceUID,
+                  "InstancesInSeries": len(self.series_collector.series),
+                  }
+        return series
 
 
 if __name__ == "__main__":
